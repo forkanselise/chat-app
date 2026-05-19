@@ -26,6 +26,10 @@ class AuthStateNotifier extends StateNotifier<AppUser?> {
     await _authService.register(name, email, password);
   }
 
+  Future<String?> getToken() async {
+    return await _authService.getToken();
+  }
+
   Future<void> logout() async {
     await _authService.logout();
     state = null;

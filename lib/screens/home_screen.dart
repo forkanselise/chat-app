@@ -3,7 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../providers/chat_mode_provider.dart';
+import '../utils/date_formatter.dart';
 import 'chat_screen.dart';
+import '../screens/group_list_screen.dart';
+import '../screens/group_create_screen.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -24,7 +27,7 @@ class HomeScreen extends ConsumerWidget {
             const Text('Chat App'),
             Text(
               mode == ChatMode.signalR ? 'Socket Mode' : 'Polling Mode',
-              style: TextStyle(fontSize: 12, color: Colors.orange),
+              style: const TextStyle(fontSize: 12, color: Colors.orange),
             ),
           ],
         ),
@@ -34,11 +37,25 @@ class HomeScreen extends ConsumerWidget {
               ref.read(chatModeProvider.notifier).state = null;
               ref.read(authProvider.notifier).logout();
             },
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.power_settings_new),
+          ),
+          IconButton(
+            tooltip: 'My Groups',
+            icon: const Icon(Icons.group),
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(builder: (_) => const GroupListScreen()));
+            },
           ),
         ],
       ),
       body: _buildUserList(ref),
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'Create a new group',
+        child: const Icon(Icons.add),
+        onPressed: () {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => GroupCreateScreen()));
+        },
+      ),
     );
   }
 
@@ -78,7 +95,7 @@ class HomeScreen extends ConsumerWidget {
                 ],
               ),
               title: Text(user.name),
-              subtitle: Text(user.isOnline ? 'Online' : 'Offline'),
+              subtitle: Text(user.isOnline ? 'Online' : formatLastSeen(user.lastSeen)),
               onTap: () {
                 Navigator.push(
                   context,

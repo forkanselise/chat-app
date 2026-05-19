@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'screens/auth_gate.dart';
 import 'firebase_options.dart';
+import 'services/notification_service.dart';
 
 // This is called when the app is in the background or terminated
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -19,16 +20,11 @@ void main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // Request notification permissions
-  FirebaseMessaging messaging = FirebaseMessaging.instance;
-  await messaging.requestPermission(
-    alert: true,
-    badge: true,
-    sound: true,
-  );
-
   // Set background message handler
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
+  // Initialize all custom notification listeners (foreground, background, launch states, and token refresh)
+  await NotificationService().init();
 
   runApp(
     const ProviderScope(
@@ -44,6 +40,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Chat App',
+      navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueAccent),

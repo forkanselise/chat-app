@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:chat_app/models/app_user.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +8,7 @@ import '../providers/chat_provider.dart';
 import '../providers/chat_mode_provider.dart';
 import '../models/message.dart';
 import 'package:intl/intl.dart';
+import '../utils/date_formatter.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String receiverName;
@@ -20,6 +23,10 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  StreamSubscription? _typingSubscription;
+  Timer? _typingTimer;
+  bool _isReceiverTyping = false;
+  bool _sentTyping = false;
 
   @override
   void initState() {
@@ -27,7 +34,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Mark messages as read when opening the chat
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(chatServiceProvider).markAsRead(widget.receiverId);
+      // subscribe to typing notifications if using SignalR
+      final mode = ref.read(chatModeProvider);
+      if (mode == ChatMode.signalR) {
+        final signalR = ref.read(signalRServiceProvider);
+        _typingSubscription = signalR.typingStream.listen((event) {
+          try {
+            final userId = event['userId']?.toString();
+            final isTyping = event['isTyping'] == true || event['isTyping'] == 'true';
+            if (userId == widget.receiverId) {
+              setState(() => _isReceiverTyping = isTyping);
+            }
+          } catch (_) {}
+        });
+      }
     });
+  }
+
+  @override
+  void dispose() {
+    _typingSubscription?.cancel();
+    _typingTimer?.cancel();
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   void sendMessage() async {
@@ -79,8 +109,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   children: [
                     Text(widget.receiverName),
                     Text(
-                      isOnline ? 'Active Now' : 'Offline',
-                      style: TextStyle(fontSize: 12, color: isOnline ? Colors.greenAccent : Colors.white70),
+                      _isReceiverTyping ? 'typing...' : (isOnline ? 'Active Now' : formatLastSeen(receiver?.lastSeen)),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _isReceiverTyping
+                            ? Colors.yellowAccent
+                            : (isOnline ? Colors.greenAccent : Colors.white70),
+                      ),
                     ),
                   ],
                 );
@@ -110,8 +145,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
         return ListView.builder(
           controller: _scrollController,
-          itemCount: messages.length,
+          itemCount: messages.length + (_isReceiverTyping ? 1 : 0),
           itemBuilder: (context, index) {
+            if (index == messages.length) {
+              return _buildTypingIndicatorItem();
+            }
             final message = messages[index];
             return _buildMessageItem(message, currentUser?.id);
           },
@@ -122,8 +160,59 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
+  Widget _buildTypingIndicatorItem() {
+    return Container(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.grey[200],
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                  bottomRight: Radius.circular(16),
+                  bottomLeft: Radius.circular(4),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${widget.receiverName} is typing something',
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 14,
+                      fontStyle: FontStyle.italic,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.8,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.grey[500]!),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildMessageItem(Message message, String? currentUserId) {
     bool isCurrentUser = message.senderId == currentUserId;
+    final isRead = message.status == 'Read';
+    final isDelivered = message.status == 'Delivered' || isRead;
 
     return Container(
       alignment: isCurrentUser ? Alignment.centerRight : Alignment.centerLeft,
@@ -154,9 +243,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 if (isCurrentUser) ...[
                   const SizedBox(width: 4),
                   Icon(
-                    message.status == 'Read' ? Icons.done_all : Icons.done,
+                    isRead || isDelivered ? Icons.done_all : Icons.done,
                     size: 14,
-                    color: message.status == 'Read' ? Colors.blue : Colors.grey,
+                    color: isRead ? Colors.blue : Colors.grey,
                   ),
                 ],
               ],
@@ -186,6 +275,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   filled: true,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                 ),
+                onChanged: (text) {
+                  // send typing events when in SignalR mode
+                  final mode = ref.read(chatModeProvider);
+                  if (mode == ChatMode.signalR) {
+                    final signalR = ref.read(signalRServiceProvider);
+                    if (!_sentTyping) {
+                      signalR.sendTyping(widget.receiverId, true);
+                      _sentTyping = true;
+                    }
+
+                    _typingTimer?.cancel();
+                    _typingTimer = Timer(const Duration(seconds: 2), () {
+                      signalR.sendTyping(widget.receiverId, false);
+                      _sentTyping = false;
+                    });
+                  }
+                },
                 onSubmitted: (_) => sendMessage(),
               ),
             ),

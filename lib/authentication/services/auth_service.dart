@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import '../../models/app_user.dart';
 import '../../utils/constants.dart';
+import '../../services/notification_service.dart';
 
 class AuthService {
   static const String _baseUrl = AppConstants.baseUrl;
@@ -51,22 +51,8 @@ class AuthService {
       await prefs.setString('user_email', email);
       await prefs.setString('user_name', user.name);
 
-      // Register FCM Token with backend
-      try {
-        final fcmToken = await FirebaseMessaging.instance.getToken();
-        if (fcmToken != null) {
-          await http.put(
-            Uri.parse('$_baseUrl/api/User/fcm-token'),
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({'Token': fcmToken}),
-          );
-        }
-      } catch (e) {
-        print('Error registering FCM token: $e');
-      }
+      // Register FCM Token with backend using centralized NotificationService
+      await NotificationService().syncToken();
 
       return user;
     } else {
@@ -90,5 +76,10 @@ class AuthService {
       name: prefs.getString('user_name') ?? '',
       token: token,
     );
+  }
+
+  Future<String?> getToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('token');
   }
 }

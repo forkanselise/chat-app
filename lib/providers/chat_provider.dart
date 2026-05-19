@@ -8,7 +8,10 @@ import 'chat_mode_provider.dart';
 import 'auth_provider.dart';
 
 final chatServiceProvider = Provider<ChatService>((ref) {
-  return ChatService();
+  final service = ChatService();
+  service.initConnectivity();
+  ref.onDispose(() => service.disposeConnectivity());
+  return service;
 });
 
 final signalRServiceProvider = Provider<SignalRService>((ref) {
@@ -27,7 +30,7 @@ final usersStreamProvider = StreamProvider<List<AppUser>>((ref) {
 
   if (mode == ChatMode.signalR) {
     final signalRService = ref.watch(signalRServiceProvider);
-    
+
     // Create a stream that combines initial polling with real-time status updates
     return _buildUserStatusStream(chatService, signalRService);
   } else {
@@ -35,10 +38,7 @@ final usersStreamProvider = StreamProvider<List<AppUser>>((ref) {
   }
 });
 
-Stream<List<AppUser>> _buildUserStatusStream(
-  ChatService chatService, 
-  SignalRService signalRService
-) async* {
+Stream<List<AppUser>> _buildUserStatusStream(ChatService chatService, SignalRService signalRService) async* {
   // 1. Initial fetch
   List<AppUser> users = await chatService.getUsers();
   yield users;
@@ -61,19 +61,19 @@ Stream<List<AppUser>> _buildUserStatusStream(
       }
       return u;
     }).toList();
-    
+
     yield users;
   }
 }
 
-final messagesStreamProvider = StreamProvider.family<List<Message>, String>((ref, otherUserId) {
+final messagesStreamProvider = StreamProvider.autoDispose.family<List<Message>, String>((ref, otherUserId) {
   final mode = ref.watch(chatModeProvider);
   final chatService = ref.watch(chatServiceProvider);
-  
+
   if (mode == ChatMode.signalR) {
     final signalRService = ref.watch(signalRServiceProvider);
     final currentUser = ref.watch(authProvider);
-    
+
     // Create a stream that starts with history and then yields new SignalR messages
     return _buildSignalRStream(chatService, signalRService, otherUserId, currentUser?.id ?? '');
   } else {
@@ -82,8 +82,8 @@ final messagesStreamProvider = StreamProvider.family<List<Message>, String>((ref
 });
 
 Stream<List<Message>> _buildSignalRStream(
-  ChatService chatService, 
-  SignalRService signalRService, 
+  ChatService chatService,
+  SignalRService signalRService,
   String otherUserId,
   String currentUserId,
 ) async* {
@@ -91,38 +91,88 @@ Stream<List<Message>> _buildSignalRStream(
   List<Message> history = await chatService.getMessages(otherUserId);
   yield history;
 
-  // 2. Listen for new messages OR read receipts from SignalR
+  // 2. Listen for new messages OR read receipts from SignalR OR local updates
   final combinedStream = StreamGroup.merge([
     signalRService.messageStream.map((m) => {'type': 'msg', 'data': m}),
     signalRService.readReceiptStream.map((r) => {'type': 'read', 'data': r}),
+    chatService.localUpdateStream.where((uid) => uid == otherUserId).map((_) => {'type': 'local'}),
   ]);
 
   await for (final event in combinedStream) {
     if (event['type'] == 'msg') {
       final newMessage = event['data'] as Message;
       if (newMessage.senderId == otherUserId || newMessage.senderId == currentUserId) {
-        history = [...history, newMessage];
+        // Save the incoming message directly to local database cache
+        await chatService.saveReceivedMessage(otherUserId, newMessage);
+
+        // If we are currently active in this chat screen and receiving a message from the other user,
+        // automatically mark it as read immediately to notify the sender!
+        if (newMessage.senderId == otherUserId) {
+          await chatService.markAsRead(otherUserId);
+        }
+
+        // Fetch and yield the unified local messages
+        history = await chatService.getLocalMessages(otherUserId);
         yield history;
       }
     } else if (event['type'] == 'read') {
       final readerId = event['data'] as String;
       if (readerId == otherUserId) {
-        // The other person read my messages!
-        history = history.map((m) {
-          if (m.senderId == currentUserId && m.status != 'Read') {
-            return Message(
-              id: m.id,
-              senderId: m.senderId,
-              receiverId: m.receiverId,
-              text: m.text,
-              timestamp: m.timestamp,
-              status: 'Read',
-            );
-          }
-          return m;
-        }).toList();
+        // Save read receipts to the local database cache permanently
+        await chatService.markSentMessagesAsRead(otherUserId);
+
+        // Fetch and yield the updated messages
+        history = await chatService.getLocalMessages(otherUserId);
         yield history;
       }
+    } else if (event['type'] == 'local') {
+      history = await chatService.getLocalMessages(otherUserId);
+      yield history;
+    }
+  }
+}
+
+final groupMessagesProvider = StreamProvider.autoDispose.family<List<Message>, String>((ref, groupId) {
+  final mode = ref.watch(chatModeProvider);
+  final chatService = ref.watch(chatServiceProvider);
+
+  if (mode == ChatMode.signalR) {
+    final signalRService = ref.watch(signalRServiceProvider);
+    return _buildSignalRGroupStream(chatService, signalRService, groupId);
+  } else {
+    return chatService.getGroupMessagesStream(groupId);
+  }
+});
+
+Stream<List<Message>> _buildSignalRGroupStream(
+  ChatService chatService,
+  SignalRService signalRService,
+  String groupId,
+) async* {
+  // 1. Fetch History first
+  List<Message> history = await chatService.getGroupMessages(groupId);
+  yield history;
+
+  // 2. Listen for new group messages from SignalR OR local updates
+  final combinedStream = StreamGroup.merge([
+    signalRService.groupMessageStream.map((m) => {'type': 'msg', 'data': m}),
+    chatService.localUpdateStream.where((uid) => uid == groupId).map((_) => {'type': 'local'}),
+  ]);
+
+  await for (final event in combinedStream) {
+    if (event['type'] == 'msg') {
+      final newMessage = event['data'] as Message;
+      if (newMessage.groupId == groupId) {
+        // Save the incoming group message directly to local database cache
+        await chatService.saveGroupMessage(groupId, newMessage);
+
+        // Fetch and yield the unified local group messages
+        history = await chatService.getLocalGroupMessages(groupId);
+        yield history;
+      }
+    } else if (event['type'] == 'local') {
+      history = await chatService.getLocalGroupMessages(groupId);
+      yield history;
     }
   }
 }
